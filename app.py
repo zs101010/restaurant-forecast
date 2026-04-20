@@ -1,244 +1,322 @@
+
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+import json
+import os
 
 # === НАСТРОЙКА СТРАНИЦЫ ===
 st.set_page_config(
     page_title="Restaurant Forecast",
     page_icon="🍽️",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# === ЗАГРУЗКА ДАННЫХ (синтетические данные для демонстрации) ===
-@st.cache_data
-def load_data():
-    """Генерирует демонстрационные данные"""
-    dates = pd.date_range(start='2024-01-01', end='2025-03-31', freq='D')
-    
-    # Базовые паттерны
-    day_of_week_effect = {
-        0: 0.7,   # Monday
-        1: 0.8,   # Tuesday
-        2: 0.85,  # Wednesday
-        3: 0.9,   # Thursday
-        4: 1.0,   # Friday
-        5: 1.3,   # Saturday
-        6: 1.1    # Sunday
+# === ФАЙЛ ДЛЯ ХРАНЕНИЯ ДАННЫХ ===
+DATA_FILE = "restaurant_data.json"
+
+# === ФУНКЦИИ ДЛЯ РАБОТЫ С ДАННЫМИ ===
+def load_user_data():
+    """Загружает данные из JSON-файла"""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {
+        "historical_guests": {},  # словарь {дата: количество гостей}
+        "products": {  # продукты и их расход
+            "мясо": {"unit": "кг", "per_guest": 0.2},
+            "овощи": {"unit": "кг", "per_guest": 0.15},
+            "хлеб": {"unit": "шт", "per_guest": 0.5},
+            "напитки": {"unit": "л", "per_guest": 0.3}
+        }
     }
-    
-    # Сезонность
-    month_effect = {
-        1: 0.9, 2: 0.9, 3: 1.0, 4: 1.0, 5: 1.1, 6: 1.0,
-        7: 0.9, 8: 0.9, 9: 1.0, 10: 1.0, 11: 1.1, 12: 1.3
-    }
-    
-    # Погодные эффекты
-    weather_effect = {
-        'Clear': 1.0,
-        'Clouds': 0.95,
-        'Rain': 0.7,
-        'Snow': 0.6,
-        'Storm': 0.5
-    }
-    
-    # Генерируем данные
-    np.random.seed(42)
-    data = []
-    
-    for date in dates:
-        dow = date.dayofweek
-        month = date.month
-        
-        base = 100
-        base *= day_of_week_effect[dow]
-        base *= month_effect[month]
-        
-        # Случайные погодные условия (для демонстрации)
-        weather = np.random.choice(list(weather_effect.keys()), p=[0.6, 0.2, 0.1, 0.05, 0.05])
-        base *= weather_effect[weather]
-        
-        # Случайный шум
-        noise = np.random.normal(1.0, 0.1)
-        guests = int(base * noise)
-        
-        # Случайная температура
-        temp = np.random.normal(10, 15) if month in [1,2,12] else np.random.normal(20, 10)
-        
-        data.append({
-            'date': date,
-            'guests': max(20, guests),
-            'temperature': round(temp, 1),
-            'weather': weather
-        })
-    
-    return pd.DataFrame(data)
 
-# === ЗАГРУЗКА ===
-df = load_data()
+def save_user_data(data):
+    """Сохраняет данные в JSON-файл"""
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# === ЗАГОЛОВОК ===
-st.title("🍽️ Restaurant Load Forecast")
-st.caption("Прогноз загрузки ресторана на основе погоды и дня недели")
+# === ЗАГРУЗКА ДАННЫХ ===
+user_data = load_user_data()
 
-# === ОГРАНИЧЕНИЕ ОТВЕТСТВЕННОСТИ ===
-with st.expander("⚖️ Ограничение ответственности (обязательно к ознакомлению)"):
-    st.markdown("""
-    **Данный сервис предоставляется в демонстрационных целях.**
+# === БОКОВАЯ ПАНЕЛЬ (АДМИНИСТРИРОВАНИЕ) ===
+with st.sidebar:
+    st.header("⚙️ Управление данными")
     
-    1. Прогнозы носят информационный характер и не являются гарантией точного количества посетителей.
-    2. Модель использует синтетические данные и открытые погодные API. Результаты могут отличаться от реальных.
-    3. Разработчик не несет ответственности за любые убытки, возникшие при использовании прогнозов.
-    4. Решения о закупках и расписании персонала принимаются пользователем самостоятельно.
-    5. Для получения точных прогнозов требуется обучение модели на исторических данных вашего заведения.
+    admin_mode = st.checkbox("Режим редактирования", help="Включите, чтобы вносить изменения")
     
-    Используя сервис, вы подтверждаете, что ознакомлены с данным ограничением.
-    """)
-
-# === ОСНОВНОЙ ИНТЕРФЕЙС ===
-tab1, tab2, tab3 = st.tabs(["📊 Прогноз на сегодня", "📅 Прогноз на неделю", "ℹ️ Как это работает"])
-
-# === TAB 1: ПРОГНОЗ НА СЕГОДНЯ ===
-with tab1:
-    st.subheader("Прогноз на сегодня")
-    
-    # Получаем сегодняшнюю дату и данные
-    today = datetime.now().date()
-    today_data = df[df['date'].dt.date == today]
-    
-    if len(today_data) == 0:
-        # Если данных на сегодня нет, берем последние 7 дней и делаем простой прогноз
-        last_week = df.tail(7)
-        avg_guests = last_week['guests'].mean()
-        weather_today = np.random.choice(['Clear', 'Clouds', 'Rain'])
-        weather_factor = {'Clear': 1.0, 'Clouds': 0.95, 'Rain': 0.7}.get(weather_today, 1.0)
+    if admin_mode:
+        st.subheader("📊 Ввод данных о посетителях")
         
-        dow = today.weekday()
-        dow_factor = [0.7, 0.8, 0.85, 0.9, 1.0, 1.3, 1.1][dow]
-        
-        predicted_guests = int(avg_guests * dow_factor * weather_factor)
-        weekday_name = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'][dow]
-        
-        # Показываем прогноз
+        # Ручной ввод
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Ожидаемое количество гостей", f"{predicted_guests} чел.")
+            manual_date = st.date_input("Дата", datetime.now().date())
         with col2:
-            st.metric("День недели", weekday_name)
+            manual_guests = st.number_input("Количество гостей", min_value=0, step=5)
         
-        # Рекомендации
-        if predicted_guests > avg_guests * 1.2:
-            st.success("📈 **Рекомендация:** Ожидается повышенный спрос! Рекомендуется увеличить закупки продуктов на 25-30% и вывести дополнительного сотрудника.")
-        elif predicted_guests < avg_guests * 0.8:
-            st.info("📉 **Рекомендация:** Ожидается сниженный спрос. Рекомендуется сократить закупки скоропорта на 20% и оптимизировать график персонала.")
-        else:
-            st.info("📊 **Рекомендация:** Ожидается обычный спрос. Работайте в стандартном режиме.")
-            
-    else:
-        # Если данные есть
-        guests = today_data.iloc[0]['guests']
-        weather = today_data.iloc[0]['weather']
-        temp = today_data.iloc[0]['temperature']
+        if st.button("➕ Добавить/обновить данные"):
+            date_str = manual_date.strftime("%Y-%m-%d")
+            user_data["historical_guests"][date_str] = manual_guests
+            save_user_data(user_data)
+            st.success(f"Данные на {date_str} сохранены!")
+            st.rerun()
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Прогноз гостей", f"{guests} чел.")
-        with col2:
-            st.metric("Погода", weather)
-        with col3:
-            st.metric("Температура", f"{temp}°C")
+        st.divider()
         
-        avg_week = df.tail(7)['guests'].mean()
-        if guests > avg_week * 1.1:
-            st.success("📈 **Рекомендация:** Сегодня ожидается больше гостей, чем обычно. Увеличьте закупки!")
-        elif guests < avg_week * 0.9:
-            st.info("📉 **Рекомендация:** Сегодня ожидается меньше гостей. Скорректируйте закупки.")
-        else:
-            st.info("✅ Прогноз в пределах нормы.")
+        # Загрузка CSV-файла
+        st.subheader("📁 Загрузка таблицы")
+        uploaded_file = st.file_uploader("Выберите CSV или Excel файл", type=["csv", "xlsx"])
+        
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_upload = pd.read_csv(uploaded_file)
+                else:
+                    df_upload = pd.read_excel(uploaded_file)
+                
+                st.write("Предпросмотр:")
+                st.dataframe(df_upload.head())
+                
+                # Ожидаем колонки: date, guests
+                if st.button("Загрузить данные из файла"):
+                    for _, row in df_upload.iterrows():
+                        if 'date' in df_upload.columns and 'guests' in df_upload.columns:
+                            date_str = pd.to_datetime(row['date']).strftime("%Y-%m-%d")
+                            user_data["historical_guests"][date_str] = int(row['guests'])
+                    save_user_data(user_data)
+                    st.success("Данные загружены!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+        
+        st.divider()
+        
+        # Настройка продуктов
+        st.subheader("🥩 Настройка расхода продуктов")
+        
+        for product, info in user_data["products"].items():
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                new_per_guest = st.number_input(
+                    f"{product} (расход на 1 гостя, {info['unit']})",
+                    value=float(info["per_guest"]),
+                    step=0.01,
+                    key=f"prod_{product}"
+                )
+            with col2:
+                st.write(f"ед.: {info['unit']}")
+            user_data["products"][product]["per_guest"] = new_per_guest
+        
+        if st.button("💾 Сохранить настройки продуктов"):
+            save_user_data(user_data)
+            st.success("Настройки сохранены!")
+        
+        st.divider()
+        
+        # Сброс данных
+        if st.button("🗑️ Сбросить все данные", type="secondary"):
+            user_data = {
+                "historical_guests": {},
+                "products": {
+                    "мясо": {"unit": "кг", "per_guest": 0.2},
+                    "овощи": {"unit": "кг", "per_guest": 0.15},
+                    "хлеб": {"unit": "шт", "per_guest": 0.5},
+                    "напитки": {"unit": "л", "per_guest": 0.3}
+                }
+            }
+            save_user_data(user_data)
+            st.warning("Все данные сброшены!")
+            st.rerun()
 
-# === TAB 2: ПРОГНОЗ НА НЕДЕЛЮ ===
-with tab2:
-    st.subheader("Прогноз на предстоящую неделю")
+# === ОСНОВНОЙ ИНТЕРФЕЙС ===
+st.title("🍽️ Restaurant Load Forecast")
+st.caption("Прогноз загрузки ресторана с возможностью ручного ввода данных")
+
+# === ОГРАНИЧЕНИЕ ОТВЕТСТВЕННОСТИ ===
+with st.expander("⚖️ Ограничение ответственности"):
+    st.markdown("""
+    **Демонстрационная версия.** Прогнозы носят информационный характер.
+    Решения о закупках принимаются пользователем самостоятельно.
+    """)
+
+# === ПОСТРОЕНИЕ ПРОГНОЗА ===
+def generate_forecast():
+    """Генерирует прогноз на основе исторических и ручных данных"""
     
-    # Берем последнюю неделю данных + генерируем прогноз
-    last_week = df.tail(7).copy()
-    last_week['day_name'] = last_week['date'].dt.strftime('%A')
+    # Базовые значения по дням недели
+    dow_factors = [0.7, 0.8, 0.85, 0.9, 1.0, 1.3, 1.1]
     
-    # Создаем график
+    # Собираем историю
+    dates = []
+    guests_actual = []
+    
+    for date_str, guests in user_data["historical_guests"].items():
+        dates.append(pd.to_datetime(date_str))
+        guests_actual.append(guests)
+    
+    # Если есть история, считаем базовую среднюю
+    if len(guests_actual) > 0:
+        base_avg = np.mean(guests_actual)
+    else:
+        base_avg = 100  # значение по умолчанию
+    
+    # Прогноз на 7 дней
+    forecast_data = []
+    today = datetime.now().date()
+    
+    for i in range(7):
+        forecast_date = today + timedelta(days=i)
+        dow = forecast_date.weekday()
+        
+        # Прогноз = среднее * коэффициент дня недели
+        predicted = int(base_avg * dow_factors[dow])
+        
+        forecast_data.append({
+            "date": forecast_date,
+            "day_name": ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"][dow],
+            "predicted_guests": predicted,
+            "recommendation": get_recommendation(predicted, base_avg)
+        })
+    
+    return forecast_data, base_avg
+
+def get_recommendation(predicted, avg):
+    if predicted > avg * 1.2:
+        return "🔴 Высокий спрос (+30% продуктов)"
+    elif predicted > avg * 1.05:
+        return "🟡 Повышенный спрос (+15% продуктов)"
+    elif predicted < avg * 0.8:
+        return "🟢 Низкий спрос (-20% скоропорта)"
+    else:
+        return "✅ Стандартный режим"
+
+# === ВКЛАДКА 1: ПРОГНОЗ ===
+forecast_data, base_avg = generate_forecast()
+
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Прогноз", "📅 Таблица данных", "🥩 Расход продуктов", "ℹ️ Помощь"])
+
+with tab1:
+    st.subheader("Прогноз на неделю")
+    
+    # График
     fig = go.Figure()
-    
     fig.add_trace(go.Bar(
-        x=last_week['date'].dt.strftime('%d.%m'),
-        y=last_week['guests'],
-        name='Прогноз гостей',
-        marker_color='#FF6B6B',
-        text=last_week['guests'],
+        x=[f"{d['date'].day}.{d['date'].month}\n{d['day_name']}" for d in forecast_data],
+        y=[d['predicted_guests'] for d in forecast_data],
+        marker_color=['#FF6B6B' if 'Высокий' in d['recommendation'] else '#4ECDC4' for d in forecast_data],
+        text=[d['predicted_guests'] for d in forecast_data],
         textposition='auto',
     ))
-    
     fig.update_layout(
-        title="Ожидаемое количество гостей по дням",
-        xaxis_title="Дата",
-        yaxis_title="Количество гостей",
+        title="Ожидаемое количество гостей",
+        yaxis_title="Гостей",
         height=400,
         showlegend=False
     )
-    
     st.plotly_chart(fig, use_container_width=True)
     
-    # Таблица с рекомендациями по дням
-    st.subheader("Рекомендации по дням")
-    
-    for _, row in last_week.iterrows():
-        day_name = row['date'].strftime('%A')
-        guests = row['guests']
-        
-        if guests > 130:
-            rec = "🔴 Высокий спрос: увеличьте закупки на 30%"
-        elif guests > 100:
-            rec = "🟡 Средний спрос: стандартные закупки"
-        else:
-            rec = "🟢 Низкий спрос: сократите закупки скоропорта"
-        
-        with st.expander(f"📅 {day_name} — {guests} гостей"):
-            st.write(f"**Рекомендация:** {rec}")
-            st.write(f"**Погода:** {row['weather']}, {row['temperature']}°C")
+    # Карточки по дням
+    cols = st.columns(7)
+    for i, day in enumerate(forecast_data):
+        with cols[i]:
+            st.metric(
+                label=f"{day['day_name']} {day['date'].day}.{day['date'].month}",
+                value=f"{day['predicted_guests']} чел.",
+                delta="высокий" if "Высокий" in day['recommendation'] else ("низкий" if "Низкий" in day['recommendation'] else "норма")
+            )
+            st.caption(day['recommendation'])
 
-# === TAB 3: КАК ЭТО РАБОТАЕТ ===
+with tab2:
+    st.subheader("Исторические данные")
+    
+    if user_data["historical_guests"]:
+        df_history = pd.DataFrame([
+            {"Дата": date, "Гостей": guests}
+            for date, guests in user_data["historical_guests"].items()
+        ]).sort_values("Дата", ascending=False)
+        
+        st.dataframe(df_history, use_container_width=True)
+        
+        # График истории
+        fig_hist = px.line(
+            df_history.sort_values("Дата"),
+            x="Дата", y="Гостей",
+            title="Динамика посещаемости"
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("Пока нет исторических данных. Добавьте их в боковой панели →")
+    
+    # Статистика
+    if len(user_data["historical_guests"]) > 0:
+        values = list(user_data["historical_guests"].values())
+        st.metric("Среднее количество гостей", f"{int(np.mean(values))} чел.")
+
 with tab3:
-    st.subheader("Как работает прогноз")
+    st.subheader("Расчет закупок продуктов")
+    
+    # Выбираем день для расчета
+    selected_day_idx = st.selectbox(
+        "Выберите день для расчета закупок:",
+        range(7),
+        format_func=lambda x: f"{forecast_data[x]['day_name']} {forecast_data[x]['date'].day}.{forecast_data[x]['date'].month} — {forecast_data[x]['predicted_guests']} гостей"
+    )
+    
+    selected = forecast_data[selected_day_idx]
+    guests_count = selected['predicted_guests']
+    
+    st.subheader(f"📋 Закупки на {selected['date'].day}.{selected['date'].month}")
+    
+    # Таблица продуктов
+    product_data = []
+    for product, info in user_data["products"].items():
+        amount = guests_count * info["per_guest"]
+        product_data.append({
+            "Продукт": product,
+            "Расход на 1 гостя": f"{info['per_guest']} {info['unit']}",
+            "Всего на {guests_count} гостей": f"{amount:.1f} {info['unit']}"
+        })
+    
+    df_products = pd.DataFrame(product_data)
+    st.table(df_products)
+    
+    # Рекомендация по закупкам
+    if "Высокий" in selected['recommendation']:
+        st.warning("⚠️ Внимание: ожидается высокий спрос! Рекомендуется закупить на 30% больше скоропортящихся продуктов.")
+    elif "Низкий" in selected['recommendation']:
+        st.info("ℹ️ Ожидается низкий спрос. Рекомендуется сократить закупки скоропорта на 20%.")
+
+with tab4:
+    st.subheader("Как пользоваться")
     
     st.markdown("""
-    **Модель учитывает три ключевых фактора:**
+    ### 📝 Ручной ввод данных
     
-    1. **День недели** 📅
-       - Выходные дни (СБ, ВС) традиционно приносят на 30-40% больше гостей
-       - Понедельник и вторник — самые спокойные дни
+    1. Откройте **боковую панель** (значок `>` слева)
+    2. Включите **"Режим редактирования"**
+    3. Вводите данные о посетителях:
+       - **Вручную** — выберите дату и количество гостей
+       - **Файлом** — загрузите CSV/Excel с колонками `date` и `guests`
+    4. Настройте **расход продуктов** под ваше меню
     
-    2. **Погодные условия** ☀️🌧️
-       - Ясная погода → рост посетителей
-       - Дождь и снег → снижение на 20-40%
+    ### 📊 Прогноз
     
-    3. **Сезонность** 📆
-       - Декабрь (Новый год) → пик загрузки
-       - Лето → снижение из-за отпусков
+    - Модель анализирует введенные вами данные
+    - Учитывает день недели
+    - Показывает рекомендации по закупкам
     
-    **Технологии:**
-    - Python + Streamlit для интерфейса
-    - Plotly для графиков
-    - Pandas для обработки данных
+    ### 🔄 Обновление
     
-    **Для точных прогнозов вашему заведению нужно:**
-    1. Загрузить историю продаж за 3-6 месяцев
-    2. Модель обучится на ваших данных
-    3. Получать персонализированные прогнозы
+    - После добавления новых данных прогноз пересчитывается автоматически
+    - Чем больше истории, тем точнее прогноз
     """)
-    
-    st.info("💡 **Совет:** Для получения более точных прогнозов свяжитесь с разработчиком для настройки модели под ваше заведение.")
 
-# === ФУТЕР С ПРАВОВОЙ ИНФОРМАЦИЕЙ ===
+# === ФУТЕР ===
 st.divider()
-st.caption("© 2025 Restaurant Forecast | Демонстрационная версия | Прогнозы не являются гарантией | v1.0")
+st.caption("© 2025 Restaurant Forecast | Ручной ввод данных | Прогнозы не являются гарантией")
